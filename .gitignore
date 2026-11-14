@@ -1,2 +1,5 @@
 # PlatformIO 构建缓存
 firmware/.pio/
+
+# 离线开发环境（约 800MB，随项目目录拷贝，不进 git）
+setup/offline/
