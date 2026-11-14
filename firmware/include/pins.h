@@ -12,11 +12,11 @@
 #define PIN_MOTOR_FI        GPIOA, GPIO_PIN_6
 #define PIN_MOTOR_BI        GPIOA, GPIO_PIN_7
 
-// —— 正/反转按键 (外部 5.1K 上拉 + 100nF，低=按下) ——
-// PA4: CW_START  (P3)
-// PA5: CCW_START (P4)
-#define PIN_CW_START        GPIOA, GPIO_PIN_4
-#define PIN_CCW_START       GPIOA, GPIO_PIN_5
+// —— 本地按键 (外部 5.1K 上拉 + 100nF，低=按下) ——
+// P3 (PA4): 方向键 —— 按住运行，每次按下翻转方向
+// P4 (PA5): 调速键 —— 40% / 60% / 80% 三档循环
+#define PIN_BTN_DIR         GPIOA, GPIO_PIN_4
+#define PIN_BTN_SPEED       GPIOA, GPIO_PIN_5
 
 // —— 限位开关 (NC 常闭：常态接地为低，碰到后断开为高=触发) ——
 #define PIN_LEFT_LIMIT      GPIOA, GPIO_PIN_9   // EXTI9

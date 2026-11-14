@@ -5,8 +5,9 @@
 // —— 外设句柄 ——
 TIM_HandleTypeDef htim3;    // CH1=MOTOR_FI, CH2=MOTOR_BI
 
-// 本地按键点动时的默认占空比 (0..1000)
-#define BUTTON_PWM 600
+// 本地调速档位 (0..1000): 40% / 60% / 80%
+static const uint16_t local_speed_table[3] = {400, 600, 800};
+static uint8_t local_speed_level = 0;   // 默认 40%
 
 // ============================================================
 // 时钟配置 —— STM32F030 内部 HSI 8MHz → PLL×6 = 48MHz
@@ -130,7 +131,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 // 433M 遥控 —— D0=PA3 正转, D1=PA0 反转, D2=PB1 停止
 // 模块空闲输出低电平, 检测上升沿(按键按下)作为一次指令
 // ============================================================
-#define REMOTE_PWM   600        // 遥控指令的默认占空比 (0..1000)
 #define REMOTE_DEBOUNCE_SAMPLES  2   // 连续 2 次采样一致(约 20ms)才认
 #define REMOTE_STARTUP_IDLE_SAMPLES 50 // 上电后三路连续空闲 500ms 才允许接收
 #define REVERSE_DELAY_MS 500            // 正反转切换前强制停车时间
@@ -149,7 +149,8 @@ static uint8_t      remote_idle_count = 0;
 static motor_dir_t  remote_pending_dir = MOTOR_IDLE;
 static uint32_t     reverse_started = 0;
 static bool         local_active = false;
-static motor_dir_t  local_dir = MOTOR_IDLE;
+static motor_dir_t  local_dir = MOTOR_IDLE;   // 松开后保留, 供下次按下翻转
+static remote_key_t key_p4;                   // P4 调速键消抖
 
 // 任一限位触发都取消遥控保持和待执行换向，松开后不得自行恢复
 static void remote_limit_stop(void) {
@@ -221,6 +222,9 @@ static void remote_init(void) {
     reverse_started = 0;
     local_active = false;
     local_dir = MOTOR_IDLE;
+    key_p4.stable = false;
+    key_p4.count  = 0;
+    key_p4.edge   = false;
 }
 
 // 每 10ms 调用一次；本地按键优先时只计时，不接收遥控新命令
@@ -283,32 +287,49 @@ int main(void) {
     remote_init();
 
     while (1) {
-        bool cw  = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_RESET);
-        bool ccw = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_RESET);
-        bool local_pressed = (cw != ccw);  // 同时按下或都松开时均不启动
+        // P3 方向键 / P4 调速键（低电平 = 按下）
+        bool p3 = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_RESET);
+        bool p4 = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_RESET);
 
-        remote_poll(!local_pressed);
+        // P3 按住时本地优先，屏蔽遥控新指令
+        remote_poll(!p3);
 
-        if (local_pressed) {
-            motor_dir_t dir = cw ? MOTOR_CW : MOTOR_CCW;
+        if (p3) {
+            if (!local_active) {
+                // 首次按下正转，之后每次按下翻转方向
+                if (local_dir == MOTOR_IDLE)    local_dir = MOTOR_CW;
+                else if (local_dir == MOTOR_CW) local_dir = MOTOR_CCW;
+                else                            local_dir = MOTOR_CW;
 
-            // 新按下或改变方向时才发命令，避免等待期间反复重置换向计时
-            if (!local_active || local_dir != dir) {
-                remote_request_dir(dir);
-                local_dir = dir;
                 local_active = true;
+
+                if (remote_running) {
+                    // 电机仍在转（遥控运行中），换向保留 0.5s 保护
+                    remote_request_dir(local_dir);
+                } else {
+                    // 本地点动松开时已停车，再次按下直接换向启动
+                    remote_pending_dir = MOTOR_IDLE;
+                    remote_dir = local_dir;
+                    remote_running = true;
+                }
             }
         } else if (local_active) {
-            // 本地按键为点动：松开即停；保留最后方向用于快速反向保护
+            // 松开即停；保留 local_dir 供下次按下翻转
             if (remote_running) reverse_started = HAL_GetTick();
             remote_running = false;
             remote_pending_dir = MOTOR_IDLE;
             local_active = false;
-            local_dir = MOTOR_IDLE;
+        }
+
+        // P4 按下沿换档: 40% → 60% → 80% → 40%（20ms 消抖，按住不连跳）
+        remote_key_update(&key_p4, p4);
+        if (key_p4.edge) {
+            local_speed_level = (uint8_t)((local_speed_level + 1) % 3);
         }
 
         if (remote_running) {
-            motor_start(remote_dir, local_active ? BUTTON_PWM : REMOTE_PWM);
+            // 遥控与有线共用同一速度档位
+            motor_start(remote_dir, local_speed_table[local_speed_level]);
         } else {
             motor_stop();
         }
